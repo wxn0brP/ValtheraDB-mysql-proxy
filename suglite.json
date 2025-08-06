@@ -1,0 +1,7 @@
+{
+    "ref": "go",
+    "restart_cmd": "kill_port 4000 && clear",
+    "events": {
+        "rs": "kill_port 4000 && clear"
+    }
+}
