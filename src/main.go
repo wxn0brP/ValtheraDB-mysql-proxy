@@ -36,12 +36,14 @@ type Config struct {
 	ServerURL string `json:"server_url"`
 	AuthToken string `json:"auth_token"`
 	DBName    string `json:"db_name"`
+	Port      int    `json:"port"`
 }
 
 type SQLHandlerData struct {
 	serverURL string
 	authToken string
 	dbName    string
+	port      int
 }
 
 var ServerCfg *SQLHandlerData
@@ -56,7 +58,7 @@ func readConfig(configPath string) (*SQLHandlerData, error) {
 		return nil, fmt.Errorf("failed to parse config JSON: %w", err)
 	}
 
-	if cfg.ServerURL == "" || cfg.AuthToken == "" {
+	if cfg.ServerURL == "" || cfg.AuthToken == "" || cfg.DBName == "" || cfg.Port == 0 {
 		return nil, fmt.Errorf("config missing required fields")
 	}
 
@@ -64,6 +66,7 @@ func readConfig(configPath string) (*SQLHandlerData, error) {
 		serverURL: cfg.ServerURL,
 		authToken: cfg.AuthToken,
 		dbName:    cfg.DBName,
+		port:      cfg.Port,
 	}, nil
 }
 
@@ -148,7 +151,7 @@ func main() {
 	)
 
 	// Listen for connections on localhost port 4000
-	l, err := net.Listen("tcp", "127.0.0.1:4000")
+	l, err := net.Listen("tcp", "127.0.0.1:"+fmt.Sprint(ServerCfg.port))
 	if err != nil {
 		log.Fatal(err)
 	}
