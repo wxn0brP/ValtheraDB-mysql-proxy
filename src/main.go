@@ -1,9 +1,14 @@
 package main
 
 import (
+	"bytes"
+	"encoding/json"
+	"fmt"
+	"io"
 	"log"
 	"net"
-	"strings"
+	"net/http"
+	"os"
 
 	"github.com/go-mysql-org/go-mysql/mysql"
 	"github.com/go-mysql-org/go-mysql/server"
@@ -27,25 +32,112 @@ type SQLHandler struct {
 	server.EmptyHandler
 }
 
-func (h *SQLHandler) HandleQuery(query string) (*mysql.Result, error) {
-	if strings.HasPrefix(strings.ToLower(query), "select") {
-		// Create a mock result set
-		resultSet, err := mysql.BuildSimpleTextResultset(
-			[]string{"id", "name"},
-			[][]interface{}{
-				{1, "John Doe"},
-				{2, "Jane Doe"},
-			},
-		)
-		if err != nil {
-			return nil, err
-		}
-		return &mysql.Result{Resultset: resultSet}, nil
+type Config struct {
+	ServerURL string `json:"server_url"`
+	AuthToken string `json:"auth_token"`
+	DBName    string `json:"db_name"`
+}
+
+type SQLHandlerData struct {
+	serverURL string
+	authToken string
+	dbName    string
+}
+
+var ServerCfg *SQLHandlerData
+
+func readConfig(configPath string) (*SQLHandlerData, error) {
+	data, err := os.ReadFile(configPath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read config file: %w", err)
 	}
-	return nil, nil
+	var cfg Config
+	if err := json.Unmarshal(data, &cfg); err != nil {
+		return nil, fmt.Errorf("failed to parse config JSON: %w", err)
+	}
+
+	if cfg.ServerURL == "" || cfg.AuthToken == "" {
+		return nil, fmt.Errorf("config missing required fields")
+	}
+
+	return &SQLHandlerData{
+		serverURL: cfg.ServerURL,
+		authToken: cfg.AuthToken,
+		dbName:    cfg.DBName,
+	}, nil
+}
+
+func (h *SQLHandler) HandleQuery(query string) (*mysql.Result, error) {
+	// Encode request body
+	requestBody, err := json.Marshal(map[string]string{
+		"query": query,
+		"db":    string(ServerCfg.dbName),
+	})
+	if err != nil {
+		return nil, fmt.Errorf("failed to encode request body: %w", err)
+	}
+
+	// Build request
+	req, err := http.NewRequest("POST", ServerCfg.serverURL+"/q/sql-proxy", bytes.NewBuffer(requestBody))
+	if err != nil {
+		return nil, fmt.Errorf("failed to create HTTP request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", ServerCfg.authToken)
+
+	// Send request using custom client
+	client := &http.Client{}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("HTTP request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	// Check for unsupported status codes
+	if resp.StatusCode == http.StatusBadRequest ||
+		resp.StatusCode == http.StatusForbidden ||
+		resp.StatusCode == http.StatusNotFound {
+		return nil, fmt.Errorf("unsupported query (HTTP %d)", resp.StatusCode)
+	}
+
+	// Handle other HTTP errors
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		body, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("SQL proxy server error (HTTP %d): %s", resp.StatusCode, string(body))
+	}
+
+	// Read and decode JSON response
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read response body: %w", err)
+	}
+
+	var data struct {
+		Columns []string        `json:"columns"`
+		Rows    [][]interface{} `json:"rows"`
+	}
+
+	err = json.Unmarshal(body, &data)
+	if err != nil {
+		return nil, fmt.Errorf("invalid JSON response: %w\nraw body:\n%s", err, body)
+	}
+
+	// Build mysql.Result
+	resultSet, err := mysql.BuildSimpleTextResultset(data.Columns, data.Rows)
+	if err != nil {
+		return nil, fmt.Errorf("failed to build resultset: %w", err)
+	}
+
+	return &mysql.Result{Resultset: resultSet}, nil
 }
 
 func main() {
+	var err error
+	ServerCfg, err = readConfig("config.json")
+	if err != nil {
+		log.Fatal(err)
+	}
+
 	// Create a new server
 	srv := server.NewServer(
 		"8.0.0",

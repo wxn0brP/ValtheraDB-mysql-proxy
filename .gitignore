@@ -17,3 +17,4 @@ go.work.sum
 .env
 .vscode/
 .suglite_history
+config.json
